@@ -269,20 +269,32 @@ const server = http.createServer(async (req, res) => {
     return; // response stays open on purpose
   }
 
+  // 2) The dashboard page. Served without a token: it contains no data, and it
+  //    is what sets the cookie the API routes below require. Visiting once with
+  //    ?t=<token> establishes the session for a week.
+  if (req.method === "GET" && (url === "/" || url === "/index.html")) {
+    const headers = { "Content-Type": "text/html" };
+    if (tokenOk(query.get("t"))) {
+      headers["Set-Cookie"] = `gw_token=${encodeURIComponent(AUTH_TOKEN)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`;
+    }
+    res.writeHead(200, headers);
+    return res.end(DASHBOARD);
+  }
+
   // --- Everything below this line requires the token. ---
   if (!tokenOk(presentedToken(req, query))) {
     res.writeHead(401, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ error: "unauthorized" }));
   }
 
-  // 2) Dashboard polls this for the current queue
+  // 3) Dashboard polls this for the current queue
   if (req.method === "GET" && url === "/api/pending") {
     const list = [...pending.values()].map(({ id, tool, cmd, reasons, createdAt }) =>
       ({ id, tool, cmd, reasons, createdAt }));
     return send(res, 200, { pending: list });
   }
 
-  // 3) Dashboard posts your decision here
+  // 4) Dashboard posts your decision here
   if (req.method === "POST" && url === "/api/decision") {
     const { id, action, command } = await readBody(req);
     const p = pending.get(id);
@@ -298,16 +310,6 @@ const server = http.createServer(async (req, res) => {
       hookDeny(p.res, "Denied via dashboard");
     }
     return send(res, 200, { ok: true });
-  }
-
-  // 4) The dashboard page itself. Setting the cookie here means the page's
-  //    own fetch() calls are authenticated automatically from then on.
-  if (req.method === "GET" && (url === "/" || url === "/index.html")) {
-    res.writeHead(200, {
-      "Content-Type": "text/html",
-      "Set-Cookie": `gw_token=${encodeURIComponent(AUTH_TOKEN)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`,
-    });
-    return res.end(DASHBOARD);
   }
 
   send(res, 404, { error: "not found" });
@@ -413,13 +415,21 @@ const DASHBOARD = `<!doctype html>
   function toggleAlter(id){
     var el = document.getElementById("cmd-"+id);
     editing[id] = !editing[id];
-    el.setAttribute("contenteditable", editing[id] ? "true" : "false");
-    if(editing[id]) el.focus();
+    if (editing[id]) {
+      // A real textarea, not contenteditable: mobile keyboards handle it far
+      // better, and .value survives a re-render more predictably.
+      var v = el.innerText;
+      el.innerHTML = '<textarea id="edit-'+id+'" style="width:100%;background:#0a0d18;color:#d7e0ff;border:none;outline:none;font:inherit;resize:vertical;min-height:3em">'+esc(v)+'</textarea>';
+      document.getElementById("edit-"+id).focus();
+    } else {
+      var box = document.getElementById("edit-"+id);
+      el.innerHTML = esc(box ? box.value : el.innerText);
+    }
   }
 
   function decide(id, action){
-    var el = document.getElementById("cmd-"+id);
-    var command = editing[id] ? el.innerText : undefined;
+    var box = document.getElementById("edit-"+id);
+    var command = (editing[id] && box) ? box.value : undefined;
     fetch("/api/decision", {
       method: "POST", headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ id: id, action: action, command: command })
@@ -428,6 +438,9 @@ const DASHBOARD = `<!doctype html>
   }
 
   function poll(){
+    // Never re-render while the user is mid-edit: innerHTML would blow away
+    // the textarea they are typing in.
+    for (var k in editing) { if (editing[k]) return; }
     fetch("/api/pending").then(function(r){return r.json();})
       .then(function(d){ render(d.pending); })
       .catch(function(){});

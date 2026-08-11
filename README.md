@@ -38,7 +38,7 @@ Timeouts, disconnects, and unrecognized tools all resolve toward denial.
 
 Two server implementations live here. This is a migration in progress, not an accident.
 
-| | `server/server.js` | `server/src/` (TypeScript) |
+| | `server/server.cjs` | `server/src/` (TypeScript) |
 |---|---|---|
 | **Runtime** | Vanilla Node, zero dependencies | Express + TypeScript |
 | **Dashboard** | HTML embedded in the file, 1.2s polling | React + Vite + Tailwind, SSE with polling fallback |
@@ -48,10 +48,10 @@ Two server implementations live here. This is a migration in progress, not an ac
 | **Protected paths** | Bash commands only | Read *and* write tools, incl. `~/.ssh`, `.aws/credentials` |
 | **Status** | **Run this one today** | Migration target |
 
-`server.js` is the version that works end-to-end including remote approval, so it's the
+`server.cjs` is the version that works end-to-end including remote approval, so it's the
 one to run. The TypeScript tree has the better policy engine and UI but no auth, which
 makes it unsafe to expose through a tunnel. Porting auth, push, and tunnel-blocking into
-it — then deleting `server.js` — is the next work.
+it — then deleting `server.cjs` — is the next work.
 
 ---
 
@@ -59,16 +59,16 @@ it — then deleting `server.js` — is the next work.
 
 | Path | What |
 |------|------|
-| `server/server.js` | The running gateway. Server, policy engine, pending store, ntfy push, and dashboard HTML in one dependency-free file. |
+| `server/server.cjs` | The running gateway. Server, policy engine, pending store, ntfy push, and dashboard HTML in one dependency-free file. |
 | `server/src/policy.config.ts` | Rule lists (`autoAllow`, `dangerous`) and timeouts. **The file you tune.** |
 | `server/src/policy.ts` | Evaluation logic — dangerous first, then autoAllow, else ask. |
 | `server/src/approvals.ts` | In-memory pending store; one promise per held request. |
 | `server/src/index.ts` | Routes and the exact hook JSON responses. |
 | `web/src/` | React dashboard. Built to `web/dist`, served by the TS gateway at `/`. |
-| `scripts/start.sh` | Config + launcher for `server.js`. **Gitignored** — holds live secrets. |
+| `scripts/start.sh` | Config + launcher for `server.cjs`. **Gitignored** — holds live secrets. |
 | `scripts/start.sh.example` | Template. Copy to `start.sh` and fill in. |
 | `scripts/smoke-test.sh` | Reproduces allow / ask / hold+approve round-trips with `curl`. |
-| `.claude/settings.json` | Hook registration for `server.js` (600s timeout). |
+| `.claude/settings.json` | Hook registration for `server.cjs` (600s timeout). |
 | `settings.hook.json` | Hook registration for the TS gateway (120s timeout). |
 
 ---
@@ -170,7 +170,7 @@ to exercise the round-trips.
 
 ## Policy engine
 
-`server.js` evaluates in this order:
+`server.cjs` evaluates in this order:
 
 1. **Read/write tools** (`Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`) → allow.
 2. **Bash** → tested against every `DANGER` pattern. Any match holds the call and shows
@@ -184,7 +184,7 @@ to exercise the round-trips.
 The TypeScript engine adds an `ask` verdict that defers to Claude's native prompt for
 unclassified calls, matched-evidence strings on each risk factor, and
 `protectedPathPattern` checks on file tools — so `Read ~/.ssh/id_rsa` is caught, which
-`server.js` currently misses.
+`server.cjs` currently misses.
 
 ### The known weakness
 
@@ -228,7 +228,7 @@ All responses use Claude Code's `hookSpecificOutput` shape.
 
 The gateway is reachable from the public internet through the tunnel, and the alter path
 hands an arbitrary command back to Claude Code for execution. An unauthenticated
-instance is therefore remote code execution on the host. The defenses in `server.js`:
+instance is therefore remote code execution on the host. The defenses in `server.cjs`:
 
 **Fail-closed everywhere.** Timeout denies. Unrecognized tools hold rather than pass.
 Disconnects drop the request rather than leaking a response.
@@ -253,7 +253,7 @@ tunneled requests also arrive from `127.0.0.1`.
 - The notification tap-through URL embeds the token, so it's visible on the phone's lock
   screen. Accepted tradeoff for one-tap approval.
 - The TypeScript gateway has no auth and must stay on localhost until the port lands.
-- `server.js` auto-allows read tools on any path, including secrets. Fixed in the TS
+- `server.cjs` auto-allows read tools on any path, including secrets. Fixed in the TS
   policy engine, not yet in the running one.
 - Pending approvals are in memory; a restart drops the queue. Held connections die with
   it, so nothing is silently approved.
@@ -265,7 +265,7 @@ tunneled requests also arrive from `127.0.0.1`.
 ## Roadmap
 
 **Migration.** Port auth, ntfy push, and tunnel-blocking into the TypeScript gateway,
-then retire `server.js` and consolidate on one implementation.
+then retire `server.cjs` and consolidate on one implementation.
 
 **Learned risk classification.** Log every tool call and decision to JSONL, including a
 random sample of auto-allowed calls so the training data isn't censored by the existing

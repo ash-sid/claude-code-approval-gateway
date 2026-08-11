@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "http", "url": "http://localhost:4517/pre-tool-use", "timeout": 600 }
+        ]
+      }
+    ]
+  }
+}

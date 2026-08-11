@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#
+# Start the Claude Code approval gateway with push notifications and a
+# stable ngrok URL — in one command.
+#
+# It launches ngrok in the background (pinned to your permanent dev domain),
+# then runs server.js in the foreground. Press Ctrl+C once and BOTH stop
+# cleanly (the trap below kills ngrok), so you won't get a port-in-use error
+# or a leftover tunnel next time.
+#
+#   chmod +x start.sh        # once, to make it runnable
+#   ./start.sh
+#
+set -euo pipefail
+
+# --- your settings ---------------------------------------------------------
+# Your permanent ngrok dev domain (never changes):
+NGROK_DOMAIN="NGROK_DOMAIN_GOES_HERE"
+
+# Random, password-like ntfy topic. Subscribe your phone's ntfy app to THIS
+# exact string. Anyone who knows it can see your requests, so keep it private.
+export NTFY_TOPIC="NTFY_TOPIC_GOES_HERE"
+
+# Shared secret for the dashboard and decision API. Without it the server
+# refuses to start.  Generate:  openssl rand -hex 32
+export AUTH_TOKEN="paste-your-64-char-token-here"
+
+# Derived automatically — no need to edit:
+export PUBLIC_URL="https://${NGROK_DOMAIN}"
+PORT="4517"
+# ---------------------------------------------------------------------------
+
+cd "$(dirname "$0")/.."
+
+command -v ngrok >/dev/null 2>&1 || { echo "ngrok not found. Install it first (brew install ngrok)."; exit 1; }
+command -v node  >/dev/null 2>&1 || { echo "node not found."; exit 1; }
+[ -f server/server.js ] || { echo "server.js not found in $(pwd)."; exit 1; }
+
+# Start ngrok in the background, pinned to your permanent domain.
+echo "Starting ngrok  ->  ${PUBLIC_URL}"
+ngrok http "${PORT}" --url="${NGROK_DOMAIN}" --log=stdout > ngrok.log 2>&1 &
+NGROK_PID=$!
+
+# When this script exits (Ctrl+C or otherwise), stop ngrok too.
+cleanup() {
+  echo ""
+  echo "Shutting down ngrok (pid ${NGROK_PID})..."
+  kill "${NGROK_PID}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Give ngrok a moment to establish the tunnel, then confirm it's alive.
+sleep 2
+if ! kill -0 "${NGROK_PID}" 2>/dev/null; then
+  echo "ngrok failed to start. Check ngrok.log:"
+  tail -n 20 ngrok.log
+  exit 1
+fi
+
+echo "Tunnel up. Open ${PUBLIC_URL} on your phone, and subscribe ntfy to topic: ${NTFY_TOPIC}"
+echo "Starting server (Ctrl+C to stop everything)..."
+echo ""
+
+# Run the server in the foreground. Ctrl+C stops it, which triggers cleanup().
+node server/server.js
+

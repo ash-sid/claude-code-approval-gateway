@@ -61,7 +61,19 @@ const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replac
 // ---------------------------------------------------------------------------
 // Policy: what auto-allows vs. what must be reviewed
 // ---------------------------------------------------------------------------
-const SAFE_TOOLS = ["Edit", "Write", "MultiEdit", "Read", "Glob", "Grep"];
+// File tools are only safe relative to their target. Splitting them out of a
+// single SAFE_TOOLS list is the point: the old list allowed Write/Edit on any
+// path, so the gateway happily approved writes to ~/.ssh/authorized_keys and
+// to its own hook config.
+const READ_TOOLS = ["Read", "Glob", "Grep", "NotebookRead"];
+const WRITE_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+// Paths no file tool may touch without a human. Mirrors protectedPathPattern
+// in server/src/policy.config.ts — keep the two in sync — plus `.claude/`,
+// which the TS pattern does not yet cover: an Edit there rewrites the hook
+// config and switches the gateway off through the gateway.
+const PROTECTED_PATH =
+  /(^|\/)\.env(\.|$)|(^|\/)(id_rsa|id_ed25519|authorized_keys)|(^|\/)\.aws\/credentials|(^|\/)\.ssh\/|(^|\/)\.claude\//;
 
 const DANGER = [
   { re: /\brm\s+-\w*[rf]/i,            label: "Force/recursive delete (rm -rf)" },
@@ -80,8 +92,17 @@ const DANGER = [
   { re: /\.env\b/,                     label: "Touches a .env file" },
 ];
 
-function assess(tool, cmd) {
-  if (SAFE_TOOLS.includes(tool)) return { decision: "allow", reasons: [] };
+function assess(tool, cmd, filePath) {
+  if (READ_TOOLS.includes(tool) || WRITE_TOOLS.includes(tool)) {
+    if (filePath && PROTECTED_PATH.test(filePath)) {
+      const verb = WRITE_TOOLS.includes(tool) ? "writes to" : "reads";
+      return { decision: "hold", reasons: [`${tool} ${verb} a protected path: ${filePath}`] };
+    }
+    // Ordinary files still auto-allow: this server has no "ask" verdict, and
+    // holding every edit would make it unusable. The TS port returns "ask"
+    // here instead.
+    return { decision: "allow", reasons: [] };
+  }
   if (tool === "Bash") {
     const reasons = DANGER.filter((d) => d.re.test(cmd)).map((d) => d.label);
     return reasons.length ? { decision: "hold", reasons } : { decision: "allow", reasons: [] };
@@ -239,8 +260,10 @@ const server = http.createServer(async (req, res) => {
 
     const input = await readBody(req);
     const tool = input.tool_name || "";
-    const cmd = (input.tool_input && input.tool_input.command) || "";
-    const { decision, reasons } = assess(tool, cmd);
+    const ti = input.tool_input || {};
+    const cmd = ti.command || "";
+    const filePath = ti.file_path || ti.path || ti.notebook_path || "";
+    const { decision, reasons } = assess(tool, cmd, filePath);
 
     if (decision === "allow") {
       console.log(`ALLOW  ${tool}  ${cmd.slice(0, 70)}`);
@@ -257,9 +280,10 @@ const server = http.createServer(async (req, res) => {
       }
     }, AUTO_DENY_MS);
 
-    const entry = { id, tool, cmd, reasons, createdAt: Date.now(), res, timer };
+    // A held Write/Edit has no `command`; show the path so the card isn't blank.
+    const entry = { id, tool, cmd: cmd || filePath, reasons, createdAt: Date.now(), res, timer };
     pending.set(id, entry);
-    console.log(`HELD   ${tool}  ${cmd.slice(0, 70)}  [${reasons.join(", ")}]`);
+    console.log(`HELD   ${tool}  ${entry.cmd.slice(0, 70)}  [${reasons.join(", ")}]`);
     notify(entry); // fire-and-forget push to the phone
 
     // If Claude Code gives up first, clean up so we don't leak the response

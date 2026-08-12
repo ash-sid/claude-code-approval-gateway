@@ -6,16 +6,17 @@ response **held open** while a push notification goes to your phone. Approve, de
 rewrite the command from anywhere. Ignore it and it **fails closed**.
 
 ```
-                                        ┌───────────────────────────┐
-Claude Code ──POST /pre-tool-use──▶ Gateway                         │
-                                    │  policy engine                │
-                                    ├─ safe      → allow (instant)  │
-                                    ├─ unknown   → ask (native)     │
-                                    └─ dangerous → HOLD ──┬──▶ dashboard (browser)
-                                                          └──▶ ntfy push → phone
+Claude Code ──POST /pre-tool-use──▶ Gateway
+                                    │  policy engine
+                                    ├─ safe         → allow (instant)
+                                    ├─ dangerous    → HOLD ──┬──▶ dashboard (browser)
+                                    └─ unrecognized → HOLD ──┴──▶ ntfy push → phone
                                     ◀── held response resolves the tool call
                                         (auto-denies on timeout)
 ```
+
+The TypeScript gateway adds an `ask` verdict that hands unclassified calls back to
+Claude Code's native prompt; `server.cjs` holds them instead.
 
 Remote approval runs over an ngrok tunnel, so the phone reaches the dashboard from cell
 data.
@@ -45,13 +46,14 @@ Two server implementations live here. This is a migration in progress, not an ac
 | **Auth** | Bearer token on all non-hook routes | **None — localhost only** |
 | **Phone approval** | ntfy push + ngrok tunnel | Not yet |
 | **Verdicts** | allow / hold | allow / ask / dangerous |
-| **Protected paths** | Bash commands only | Read *and* write tools, incl. `~/.ssh`, `.aws/credentials` |
+| **Protected paths** | Bash patterns + file-tool targets, incl. `.claude/` | File-tool targets (`~/.ssh`, `.aws/credentials`) — no `.claude/` yet |
 | **Status** | **Run this one today** | Migration target |
 
 `server.cjs` is the version that works end-to-end including remote approval, so it's the
-one to run. The TypeScript tree has the better policy engine and UI but no auth, which
-makes it unsafe to expose through a tunnel. Porting auth, push, and tunnel-blocking into
-it — then deleting `server.cjs` — is the next work.
+one to run. The TypeScript tree has the more expressive policy engine — an `ask` verdict,
+matched-evidence strings — and a real UI, but no auth, which makes it unsafe to expose
+through a tunnel. Porting auth, push, and tunnel-blocking into it — then deleting
+`server.cjs` — is the next work.
 
 ---
 
@@ -67,9 +69,8 @@ it — then deleting `server.cjs` — is the next work.
 | `web/src/` | React dashboard. Built to `web/dist`, served by the TS gateway at `/`. |
 | `scripts/start.sh` | Config + launcher for `server.cjs`. **Gitignored** — holds live secrets. |
 | `scripts/start.sh.example` | Template. Copy to `start.sh` and fill in. |
-| `scripts/smoke-test.sh` | Reproduces allow / ask / hold+approve round-trips with `curl`. |
-| `.claude/settings.json` | Hook registration for `server.cjs` (600s timeout). |
-| `settings.hook.json` | Hook registration for the TS gateway (120s timeout). |
+| `scripts/smoke-test.sh` | Reproduces allow / ask / hold+approve round-trips with `curl`. Targets the TypeScript API. |
+| `settings.hook.json` | Hook registration block to copy into your settings file (600s timeout). |
 
 ---
 
@@ -87,7 +88,7 @@ chmod +x scripts/start.sh
 
 | Variable | How to get it |
 |---|---|
-| `NGROK_DOMAIN` | Your reserved ngrok domain, e.g. `something.ngrok-free.app` |
+| `NGROK_DOMAIN` | Your reserved ngrok domain, e.g. `something.ngrok-free.app` or `.ngrok-free.dev` |
 | `NTFY_TOPIC` | `openssl rand -hex 16` — subscribe your phone's ntfy app to this exact string |
 | `AUTH_TOKEN` | `openssl rand -hex 32` |
 
@@ -117,8 +118,7 @@ Refusing to start means `AUTH_TOKEN` isn't exported — deliberate, see
 
 ### 3. Register the hook
 
-Merge `.claude/settings.json` into `~/.claude/settings.json` (user-level) or keep it
-project-level:
+The hook can be registered at either level. Both use the same block:
 
 ```json
 {
@@ -135,12 +135,35 @@ project-level:
 }
 ```
 
+**Global** — `~/.claude/settings.json`. Gates every project. That file also holds
+unrelated user settings, so **merge, don't overwrite**, and back it up first:
+
+    cp ~/.claude/settings.json ~/.claude/settings.json.bak
+
+**Project-level** — `.claude/settings.json` in the project you want gated. Scoped to
+that one project, which is useful when you only want the gateway on for a sandbox.
+Project settings apply based on where Claude Code was launched from, so you have to
+`cd` into that project in your terminal and start Claude Code there. Opening the
+folder some other way won't pick it up.
+
+Pick one. If both exist, both fire — `/hooks` will show `PreToolUse (2)` and every
+registration is consulted, with any `deny` beating any `allow`. Not harmful, just
+confusing when you're debugging why a call was blocked.
+
+> **Don't register it project-level inside this repo.** The gateway would gate the
+> edits you're making to the gateway, so a policy mistake locks you out of the file
+> that would fix it. Run Claude Code in a disposable project instead.
+
 The `http` hook type means Claude Code POSTs the payload directly — no shell wrapper.
 `matcher: ""` fires on every tool; narrow to `"Bash"` to gate only shell commands.
-`timeout` is in **seconds** and must exceed the server's hold window (5 min) so the
-server always answers before Claude Code gives up.
 
-Restart Claude Code, then run `/hooks` to confirm registration.
+`timeout` is in **seconds** and must exceed the gateway's hold window, because these
+are two independent timers. The gateway sends `deny` when its own timer expires, but
+if Claude Code has already stopped waiting, that response goes to a socket nobody is
+reading. Whichever timer is shorter is your real review window: 5 min for
+`server.cjs`, 110s for the TypeScript gateway.
+
+Restart Claude Code fully — quit, not just reload — then run `/hooks` to confirm.
 
 ### 4. Verify
 
@@ -163,8 +186,11 @@ cd server && npm install && npm start     # tsx src/index.ts, port 4517
 cd web && npm install && npm run build    # → web/dist, served at /
 ```
 
-Use `settings.hook.json` (120s) for the hook registration, and `scripts/smoke-test.sh`
-to exercise the round-trips.
+The hook block above works unchanged — both servers listen on 4517. One difference: the
+TypeScript gateway expires holds after 110s (`approvalTimeoutMs` in
+`server/src/policy.config.ts`) no matter what the hook `timeout` says, so that is your
+review window here, not five minutes. `scripts/smoke-test.sh` exercises the
+allow / ask / hold round-trips against this server.
 
 ---
 
@@ -172,19 +198,25 @@ to exercise the round-trips.
 
 `server.cjs` evaluates in this order:
 
-1. **Read/write tools** (`Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`) → allow.
+1. **File tools** (`Read`, `Glob`, `Grep`, `NotebookRead`, `Write`, `Edit`, `MultiEdit`,
+   `NotebookEdit`) → allow, **unless the target path is protected** — `.env`, `id_rsa`,
+   `id_ed25519`, `authorized_keys`, `.ssh/`, `.aws/credentials`, `.claude/` — which
+   holds. The `.claude/` entry matters: without it, an `Edit` there rewrites the hook
+   config and switches the gateway off through the gateway.
 2. **Bash** → tested against every `DANGER` pattern. Any match holds the call and shows
    the matched labels as risk chips.
 3. **Anything else** → hold. Unrecognized tools are unknown-risk, not safe.
 
 `DANGER` covers recursive and forced deletes, `rmdir`, Windows `del /f`, `sudo`, `mkfs`,
-`dd if=`, `git push --force`, `git reset --hard`, redirects into system directories or
-`/dev`, `shutdown`, `reboot`, drive formatting, and any command touching `.env`.
+`dd if=`, piping remote content into a shell (`curl … | sh`), `git push --force`,
+`git reset --hard`, redirects into system directories or `/dev`, `shutdown`, `reboot`,
+drive formatting, and any command touching `.env`.
 
 The TypeScript engine adds an `ask` verdict that defers to Claude's native prompt for
-unclassified calls, matched-evidence strings on each risk factor, and
-`protectedPathPattern` checks on file tools — so `Read ~/.ssh/id_rsa` is caught, which
-`server.cjs` currently misses.
+unclassified calls, and matched-evidence strings on each risk factor so the dashboard can
+show *what* matched rather than just that something did. Its `protectedPathPattern` does
+not yet cover `authorized_keys` or `.claude/` — `server.cjs` is ahead of it there, and
+the two lists need to be reconciled when the migration lands.
 
 ### The known weakness
 
@@ -263,8 +295,11 @@ tunneled requests also arrive from `127.0.0.1`.
 - The notification tap-through URL embeds the token, so it's visible on the phone's lock
   screen. Accepted tradeoff for one-tap approval.
 - The TypeScript gateway has no auth and must stay on localhost until the port lands.
-- `server.cjs` auto-allows read tools on any path, including secrets. Fixed in the TS
-  policy engine, not yet in the running one.
+- **Alter is Bash-only.** The rewritten command goes back as `updatedInput.command`,
+  which is the wrong shape for `Write`/`Edit`. Approve and Deny work correctly on
+  file-tool holds; Alter does not.
+- Protected-path matching runs on the literal path string, with no normalization. A
+  symlink or an unusual relative path can route around it.
 - Pending approvals are in memory; a restart drops the queue. Held connections die with
   it, so nothing is silently approved.
 - Single shared token, no per-device revocation.

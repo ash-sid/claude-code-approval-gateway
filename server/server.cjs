@@ -82,6 +82,7 @@ const DANGER = [
   { re: /\bsudo\b/,                    label: "Runs as superuser (sudo)" },
   { re: /\bmkfs\b/,                    label: "Formats a filesystem (mkfs)" },
   { re: /\bdd\s+if=/,                  label: "Raw disk write (dd)" },
+  { re: /\b(curl|wget)\b[^\n]*\|\s*(sudo\s+)?(sh|bash|zsh)\b/, label: "Pipes remote content into a shell (curl | sh)" },
   { re: /\bgit\s+push\b[^\n]*--force/i, label: "Force push" },
   { re: /\bgit\s+reset\s+--hard/i,     label: "Hard reset (discards work)" },
   { re: /(^|[^2])>\s*\/(etc|var|usr|bin|boot)\b/, label: "Redirect into a system dir" },

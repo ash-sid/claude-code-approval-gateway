@@ -287,9 +287,18 @@ const server = http.createServer(async (req, res) => {
     console.log(`HELD   ${tool}  ${entry.cmd.slice(0, 70)}  [${reasons.join(", ")}]`);
     notify(entry); // fire-and-forget push to the phone
 
-    // If Claude Code gives up first, clean up so we don't leak the response
-    req.on("close", () => {
-      if (pending.has(id)) { clearTimeout(timer); pending.delete(id); }
+    // If Claude Code gives up first, clean up so we don't leak the response.
+    // Watch `res`, not `req`: readBody() has already drained the request
+    // stream by this point, so `req` emitted 'close' before this listener
+    // existed and it never fired — the card sat approvable until auto-deny.
+    // `res` 'close' means the client really went away, or that we already
+    // answered, in which case the entry is gone and this is a no-op.
+    res.on("close", () => {
+      if (pending.has(id)) {
+        console.log(`ABANDONED  ${id} (client disconnected before a decision)`);
+        clearTimeout(timer);
+        pending.delete(id);
+      }
     });
     return; // response stays open on purpose
   }

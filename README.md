@@ -63,7 +63,7 @@ The `ask` verdict is the one thing genuinely lost. `server.js` has no middle gro
 ordinary file edits auto-allow rather than deferring to Claude's own prompt.
 
 The port's removal also deleted `scripts/smoke-test.sh`, which targeted the TypeScript API
-only. **The repo currently has no automated tests.** A `.cjs` harness that posts directly
+only. **The repo currently has no automated tests.** A `.js` harness that posts directly
 to `/pre-tool-use` is the next piece of work.
 
 ---
@@ -337,7 +337,7 @@ tunneled requests also arrive from `127.0.0.1`.
 **Correctness.** Fix the Alter shape for file tools, normalize paths before the protected
 check, and make `AUTO_DENY_MS` configurable.
 
-**Test harness.** A `.cjs` smoke test posting directly to `/pre-tool-use` — no Claude Code
+**Test harness.** A `.js` smoke test posting directly to `/pre-tool-use` — no Claude Code
 in the loop, so no plugin interference and no command rephrasing, and it runs in seconds
 rather than minutes.
 

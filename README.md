@@ -41,7 +41,7 @@ where that guarantee does not hold.
 
 | Path | What |
 |------|------|
-| `server/server.cjs` | The entire gateway. Server, policy engine, pending store, ntfy push, and dashboard HTML in one dependency-free file. |
+| `server/server.js` | The entire gateway. Server, policy engine, pending store, ntfy push, and dashboard HTML in one dependency-free file. |
 | `scripts/start.sh` | Config + launcher. **Gitignored** — holds live secrets. |
 | `scripts/start.sh.example` | Template. Copy to `start.sh` and fill in. |
 | `settings.hook.json` | Hook registration block to copy into your settings file (600s timeout). Nothing loads this file directly. |
@@ -54,12 +54,12 @@ added an `ask` outcome deferring unclassified calls to Claude Code's native prom
 
 It was removed rather than finished. The port had no auth and no phone push, which are the
 two things that make the gateway useful away from the keyboard, and its protected-path
-pattern had fallen behind `server.cjs` — missing `authorized_keys` and `.claude/`.
+pattern had fallen behind `server.js` — missing `authorized_keys` and `.claude/`.
 Completing it meant porting three working subsystems across to reach parity with something
 that already ran, and until that landed every policy change had to be made twice and kept
 in sync by hand.
 
-The `ask` verdict is the one thing genuinely lost. `server.cjs` has no middle ground, so
+The `ask` verdict is the one thing genuinely lost. `server.js` has no middle ground, so
 ordinary file edits auto-allow rather than deferring to Claude's own prompt.
 
 The port's removal also deleted `scripts/smoke-test.sh`, which targeted the TypeScript API
@@ -192,7 +192,7 @@ and compare matchers — the count alone tells you nothing. A plugin registering
 
 ## Policy engine
 
-`server.cjs` evaluates in this order:
+`server.js` evaluates in this order:
 
 1. **File tools** (`Read`, `Glob`, `Grep`, `NotebookRead`, `Write`, `Edit`, `MultiEdit`,
    `NotebookEdit`) → allow, **unless the target path is protected** — `.env`, `id_rsa`,
@@ -278,7 +278,7 @@ HTTP undefined from http://localhost:4517/pre-tool-use
 `rm -rf test.txt` executed. No native permission prompt appeared. A `PreToolUse` hook that
 cannot reach its endpoint is bypassed rather than treated as a denial.
 
-This is not fixable inside `server.cjs` — there is no code you can add to a server that
+This is not fixable inside `server.js` — there is no code you can add to a server that
 isn't running. **The fail-closed guarantee is conditional on the gateway process being
 alive, and the gateway cannot enforce that condition itself.** Anyone relying on this for
 real protection should treat process liveness as part of the threat model. The intended

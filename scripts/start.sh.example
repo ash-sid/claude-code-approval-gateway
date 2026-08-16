@@ -4,7 +4,7 @@
 # stable ngrok URL — in one command.
 #
 # It launches ngrok in the background (pinned to your permanent dev domain),
-# then runs server.cjs in the foreground. Press Ctrl+C once and BOTH stop
+# then runs server.js in the foreground. Press Ctrl+C once and BOTH stop
 # cleanly (the trap below kills ngrok), so you won't get a port-in-use error
 # or a leftover tunnel next time.
 #
@@ -24,7 +24,6 @@ export NTFY_TOPIC="NTFY_TOPIC_GOES_HERE"
 # Shared secret for the dashboard and decision API. Without it the server
 # refuses to start.  Generate:  openssl rand -hex 32
 export AUTH_TOKEN="paste-your-64-char-token-here"
-
 # Derived automatically — no need to edit:
 export PUBLIC_URL="https://${NGROK_DOMAIN}"
 PORT="4517"
@@ -34,7 +33,7 @@ cd "$(dirname "$0")/.."
 
 command -v ngrok >/dev/null 2>&1 || { echo "ngrok not found. Install it first (brew install ngrok)."; exit 1; }
 command -v node  >/dev/null 2>&1 || { echo "node not found."; exit 1; }
-[ -f server/server.cjs ] || { echo "server.cjs not found in $(pwd)."; exit 1; }
+[ -f server/server.js ] || { echo "server.js not found in $(pwd)."; exit 1; }
 
 # Start ngrok in the background, pinned to your permanent domain.
 echo "Starting ngrok  ->  ${PUBLIC_URL}"
@@ -62,5 +61,4 @@ echo "Starting server (Ctrl+C to stop everything)..."
 echo ""
 
 # Run the server in the foreground. Ctrl+C stops it, which triggers cleanup().
-node server/server.cjs
-
+node server/server.js

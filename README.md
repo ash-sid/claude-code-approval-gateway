@@ -15,11 +15,11 @@ Claude Code ──POST /pre-tool-use──▶ Gateway
                                         (auto-denies on timeout)
 ```
 
-The TypeScript gateway adds an `ask` verdict that hands unclassified calls back to
-Claude Code's native prompt; `server.cjs` holds them instead.
+The held HTTP response *is* the mechanism. Nothing is queued or replayed — the hook call
+blocks until a human decides or the timer expires. Remote approval runs over an ngrok
+tunnel, so the phone reaches the dashboard from cell data.
 
-Remote approval runs over an ngrok tunnel, so the phone reaches the dashboard from cell
-data.
+One file, zero dependencies, no build step, no `package.json`.
 
 ---
 
@@ -31,29 +31,9 @@ until it isn't. This sits in between: automate the boring majority, escalate the
 and make escalation cheap enough that you actually read it.
 
 The constraint that shaped the design: **a missed prompt must never become an approval.**
-Timeouts, disconnects, and unrecognized tools all resolve toward denial.
-
----
-
-## Project status
-
-Two server implementations live here. This is a migration in progress, not an accident.
-
-| | `server/server.cjs` | `server/src/` (TypeScript) |
-|---|---|---|
-| **Runtime** | Vanilla Node, zero dependencies | Express + TypeScript |
-| **Dashboard** | HTML embedded in the file, 1.2s polling | React + Vite + Tailwind, SSE with polling fallback |
-| **Auth** | Bearer token on all non-hook routes | **None — localhost only** |
-| **Phone approval** | ntfy push + ngrok tunnel | Not yet |
-| **Verdicts** | allow / hold | allow / ask / dangerous |
-| **Protected paths** | Bash patterns + file-tool targets, incl. `.claude/` | File-tool targets (`~/.ssh`, `.aws/credentials`) — no `.claude/` yet |
-| **Status** | **Run this one today** | Migration target |
-
-`server.cjs` is the version that works end-to-end including remote approval, so it's the
-one to run. The TypeScript tree has the more expressive policy engine — an `ask` verdict,
-matched-evidence strings — and a real UI, but no auth, which makes it unsafe to expose
-through a tunnel. Porting auth, push, and tunnel-blocking into it — then deleting
-`server.cjs` — is the next work.
+Timeouts, disconnects, and unrecognized tools all resolve toward denial — as long as the
+gateway is running. See [Measured failure modes](#measured-failure-modes) for the case
+where that guarantee does not hold.
 
 ---
 
@@ -61,23 +41,37 @@ through a tunnel. Porting auth, push, and tunnel-blocking into it — then delet
 
 | Path | What |
 |------|------|
-| `server/server.cjs` | The running gateway. Server, policy engine, pending store, ntfy push, and dashboard HTML in one dependency-free file. |
-| `server/src/policy.config.ts` | Rule lists (`autoAllow`, `dangerous`) and timeouts. **The file you tune.** |
-| `server/src/policy.ts` | Evaluation logic — dangerous first, then autoAllow, else ask. |
-| `server/src/approvals.ts` | In-memory pending store; one promise per held request. |
-| `server/src/index.ts` | Routes and the exact hook JSON responses. |
-| `web/src/` | React dashboard. Built to `web/dist`, served by the TS gateway at `/`. |
-| `scripts/start.sh` | Config + launcher for `server.cjs`. **Gitignored** — holds live secrets. |
+| `server/server.js` | The entire gateway. Server, policy engine, pending store, ntfy push, and dashboard HTML in one dependency-free file. |
+| `scripts/start.sh` | Config + launcher. **Gitignored** — holds live secrets. |
 | `scripts/start.sh.example` | Template. Copy to `start.sh` and fill in. |
-| `scripts/smoke-test.sh` | Reproduces allow / ask / hold+approve round-trips with `curl`. Targets the TypeScript API. |
-| `settings.hook.json` | Hook registration block to copy into your settings file (600s timeout). |
+| `settings.hook.json` | Hook registration block to copy into your settings file (600s timeout). Nothing loads this file directly. |
+
+### Why there is only one implementation
+
+A TypeScript port lived in `server/src/` and `web/` for part of this project's life:
+Express, a React dashboard, SSE instead of polling, and a three-verdict policy engine that
+added an `ask` outcome deferring unclassified calls to Claude Code's native prompt.
+
+It was removed rather than finished. The port had no auth and no phone push, which are the
+two things that make the gateway useful away from the keyboard, and its protected-path
+pattern had fallen behind `server.js` — missing `authorized_keys` and `.claude/`.
+Completing it meant porting three working subsystems across to reach parity with something
+that already ran, and until that landed every policy change had to be made twice and kept
+in sync by hand.
+
+The `ask` verdict is the one thing genuinely lost. `server.js` has no middle ground, so
+ordinary file edits auto-allow rather than deferring to Claude's own prompt.
+
+The port's removal also deleted `scripts/smoke-test.sh`, which targeted the TypeScript API
+only. **The repo currently has no automated tests.** A `.cjs` harness that posts directly
+to `/pre-tool-use` is the next piece of work.
 
 ---
 
 ## Setup
 
 **Requires:** Node 18+, [ngrok](https://ngrok.com) for remote approval, and the
-[ntfy](https://ntfy.sh) app on your phone.
+[ntfy](https://ntfy.sh) app on your phone. No `npm install` — there are no dependencies.
 
 ### 1. Configure
 
@@ -146,10 +140,6 @@ Project settings apply based on where Claude Code was launched from, so you have
 `cd` into that project in your terminal and start Claude Code there. Opening the
 folder some other way won't pick it up.
 
-Pick one. If both exist, both fire — `/hooks` will show `PreToolUse (2)` and every
-registration is consulted, with any `deny` beating any `allow`. Not harmful, just
-confusing when you're debugging why a call was blocked.
-
 > **Don't register it project-level inside this repo.** The gateway would gate the
 > edits you're making to the gateway, so a policy mistake locks you out of the file
 > that would fix it. Run Claude Code in a disposable project instead.
@@ -160,8 +150,8 @@ The `http` hook type means Claude Code POSTs the payload directly — no shell w
 `timeout` is in **seconds** and must exceed the gateway's hold window, because these
 are two independent timers. The gateway sends `deny` when its own timer expires, but
 if Claude Code has already stopped waiting, that response goes to a socket nobody is
-reading. Whichever timer is shorter is your real review window: 5 min for
-`server.cjs`, 110s for the TypeScript gateway.
+reading. Whichever timer is shorter is your real review window. The shipped defaults —
+600s hook against a 300s hold — put the gateway's timer first, which is correct.
 
 Restart Claude Code fully — quit, not just reload — then run `/hooks` to confirm.
 
@@ -177,26 +167,32 @@ curl -i -X POST localhost:4517/pre-tool-use \
 
 Then ask Claude Code to `rm -rf` something disposable and confirm your phone buzzes.
 
-### Running the TypeScript gateway instead
+---
 
-Localhost only — it has no auth yet. Don't expose it.
+## The gateway is not the only hook
 
-```bash
-cd server && npm install && npm start     # tsx src/index.ts, port 4517
-cd web && npm install && npm run build    # → web/dist, served at /
-```
+`/hooks` may show `PreToolUse (2)` or more. Every registration whose matcher covers the
+tool being called fires, each returns its own verdict independently, and **any `deny`
+beats any `allow`.** Registrations come from user settings, project settings, and
+installed plugins.
 
-The hook block above works unchanged — both servers listen on 4517. One difference: the
-TypeScript gateway expires holds after 110s (`approvalTimeoutMs` in
-`server/src/policy.config.ts`) no matter what the hook `timeout` says, so that is your
-review window here, not five minutes. `scripts/smoke-test.sh` exercises the
-allow / ask / hold round-trips against this server.
+Two consequences:
+
+- A gateway `allow` is **not sufficient** for a tool call to run — something else may
+  still block it.
+- A gateway `deny` is **always sufficient** to stop it.
+
+The asymmetry runs the safe way: other hooks can only add denials, so the core invariant
+survives them intact. But it means an end-to-end test result is only attributable to this
+gateway if no other registration's matcher overlaps the tool under test. Check `/hooks`
+and compare matchers — the count alone tells you nothing. A plugin registering
+`PreToolUse` on `Read` has no bearing on a `Bash` test.
 
 ---
 
 ## Policy engine
 
-`server.cjs` evaluates in this order:
+`server.js` evaluates in this order:
 
 1. **File tools** (`Read`, `Glob`, `Grep`, `NotebookRead`, `Write`, `Edit`, `MultiEdit`,
    `NotebookEdit`) → allow, **unless the target path is protected** — `.env`, `id_rsa`,
@@ -212,12 +208,6 @@ allow / ask / hold round-trips against this server.
 `git reset --hard`, redirects into system directories or `/dev`, `shutdown`, `reboot`,
 drive formatting, and any command touching `.env`.
 
-The TypeScript engine adds an `ask` verdict that defers to Claude's native prompt for
-unclassified calls, and matched-evidence strings on each risk factor so the dashboard can
-show *what* matched rather than just that something did. Its `protectedPathPattern` does
-not yet cover `authorized_keys` or `.claude/` — `server.cjs` is ahead of it there, and
-the two lists need to be reconciled when the migration lands.
-
 ### The known weakness
 
 This is regex matching, so it fails both ways. `rm -rf $BUILD_DIR` is flagged
@@ -227,7 +217,7 @@ exact failure mode the tool exists to prevent.
 
 Testing surfaced a sharper version of the same problem. Asked to delete a file with
 `rm -rf`, the agent reasoned that the flags were unnecessary for a plain file and ran
-`rm testing.txtt` instead. That is *better* behaviour — and it sails straight through the
+`rm testing.txt` instead. That is *better* behaviour — and it sails straight through the
 gate, because `DANGER` keys on the `-r`/`-f` flags rather than on the destructive act.
 The same blind spot covers `mv important.txt /tmp/`, truncation via `> file.txt`, and
 `git checkout -- .`.
@@ -248,10 +238,8 @@ All responses use Claude Code's `hookSpecificOutput` shape.
 | **Approve** | `permissionDecision: "allow"` |
 | **Alter** then approve | `"allow"` + `updatedInput.command` with your rewrite |
 | **Deny** | `permissionDecision: "deny"` |
-| No decision before timeout | `"deny"` (or `"ask"` in the TS gateway, per `ON_EXPIRE`) |
-| Claude Code disconnects first | Pending entry dropped, timer cleared |
-| **Stop session** *(TS only)* | `"deny"` + `continue: false` — halts Claude entirely |
-| No rule matched *(TS only)* | `permissionDecision: "ask"` |
+| No decision before `AUTO_DENY_MS` | `"deny"` |
+| Claude Code disconnects first | Pending entry dropped, timer cleared, logged `ABANDONED` |
 
 ```json
 {
@@ -266,14 +254,48 @@ All responses use Claude Code's `hookSpecificOutput` shape.
 
 ---
 
+## Measured failure modes
+
+Both cases below were run end-to-end against a live gateway rather than reasoned about,
+and the result was read from the filesystem rather than from the transcript.
+
+### Gateway held past its window → fails closed ✅
+
+A held card left unanswered auto-denies at `AUTO_DENY_MS` (300s). Because the hook
+timeout is 600s, Claude Code is still listening when that verdict arrives and reports the
+call denied. Nothing further happens at 600s — the response is already closed.
+
+### Gateway down → fails open ❌
+
+With the gateway stopped, Claude Code reports the hook failure and **runs the command
+anyway**:
+
+```
+PreToolUse:Bash hook error
+HTTP undefined from http://localhost:4517/pre-tool-use
+```
+
+`rm -rf test.txt` executed. No native permission prompt appeared. A `PreToolUse` hook that
+cannot reach its endpoint is bypassed rather than treated as a denial.
+
+This is not fixable inside `server.js` — there is no code you can add to a server that
+isn't running. **The fail-closed guarantee is conditional on the gateway process being
+alive, and the gateway cannot enforce that condition itself.** Anyone relying on this for
+real protection should treat process liveness as part of the threat model. The intended
+mitigation is a `SessionStart` hook that refuses to open a session against an unreachable
+gateway.
+
+---
+
 ## Security model
 
 The gateway is reachable from the public internet through the tunnel, and the alter path
 hands an arbitrary command back to Claude Code for execution. An unauthenticated
-instance is therefore remote code execution on the host. The defenses in `server.cjs`:
+instance is therefore remote code execution on the host. The defenses:
 
-**Fail-closed everywhere.** Timeout denies. Unrecognized tools hold rather than pass.
-Disconnects drop the request rather than leaking a response.
+**Fail-closed everywhere — while running.** Timeout denies. Unrecognized tools hold rather
+than pass. Disconnects drop the request rather than leaking a response. The scope limit is
+[above](#measured-failure-modes).
 
 **Bearer token on every route except the hook.** `AUTH_TOKEN` is accepted as an
 `Authorization: Bearer` header, a `?t=` query param for the notification tap-through, or
@@ -292,14 +314,17 @@ tunneled requests also arrive from `127.0.0.1`.
 
 ### Known limitations
 
+- **Gateway-down fails open.** See [Measured failure modes](#measured-failure-modes).
+  The most significant limitation here.
+- **No automated tests.** The only harness targeted the removed TypeScript API.
 - The notification tap-through URL embeds the token, so it's visible on the phone's lock
   screen. Accepted tradeoff for one-tap approval.
-- The TypeScript gateway has no auth and must stay on localhost until the port lands.
 - **Alter is Bash-only.** The rewritten command goes back as `updatedInput.command`,
   which is the wrong shape for `Write`/`Edit`. Approve and Deny work correctly on
   file-tool holds; Alter does not.
 - Protected-path matching runs on the literal path string, with no normalization. A
   symlink or an unusual relative path can route around it.
+- `AUTO_DENY_MS` is hardcoded at 5 minutes; changing it means editing the source.
 - Pending approvals are in memory; a restart drops the queue. Held connections die with
   it, so nothing is silently approved.
 - Single shared token, no per-device revocation.
@@ -309,8 +334,15 @@ tunneled requests also arrive from `127.0.0.1`.
 
 ## Roadmap
 
-**Migration.** Port auth, ntfy push, and tunnel-blocking into the TypeScript gateway,
-then retire `server.cjs` and consolidate on one implementation.
+**Correctness.** Fix the Alter shape for file tools, normalize paths before the protected
+check, and make `AUTO_DENY_MS` configurable.
+
+**Test harness.** A `.cjs` smoke test posting directly to `/pre-tool-use` — no Claude Code
+in the loop, so no plugin interference and no command rephrasing, and it runs in seconds
+rather than minutes.
+
+**Session preflight.** A `SessionStart` hook that refuses to start against an unreachable
+gateway, closing the fail-open gap.
 
 **Learned risk classification.** Log every tool call and decision to JSONL, including a
 random sample of auto-allowed calls so the training data isn't censored by the existing

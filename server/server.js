@@ -26,6 +26,8 @@
 
 const http = require("http");
 const crypto = require("crypto");
+const os = require("os");
+const path = require("path");
 
 // An integer from the environment if it's within [min, max], otherwise the
 // default. Falling back rather than clamping is deliberate: a bad value must
@@ -103,9 +105,34 @@ const DANGER = [
   { re: /\.env\b/,                     label: "Touches a .env file" },
 ];
 
-function assess(tool, cmd, filePath) {
+// The path as the session sees it: a leading ~ expanded, a relative path
+// resolved against the session's cwd (not the gateway's), then `\` turned
+// into `/` so PROTECTED_PATH can match Windows paths. Converting comes last
+// because path.resolve() on Windows produces backslashes. Symlinks are not
+// followed.
+function normalisePath(filePath, cwd) {
+  let p = filePath;
+  if (p === "~" || p.startsWith("~/") || p.startsWith("~\\")) p = os.homedir() + p.slice(1);
+  if (typeof cwd === "string" && cwd) p = path.resolve(cwd, p);
+  return p.replace(/\\/g, "/");
+}
+
+// Raw OR normalised. Resolving can drop a match (/home/g/.ssh/../notes.txt
+// becomes /home/g/notes.txt), so the raw test stays exactly as it was and
+// normalising can only add holds. A failure while normalising holds too.
+function isProtected(filePath, cwd) {
+  if (PROTECTED_PATH.test(filePath)) return true;
+  if (typeof filePath !== "string") return false; // non-strings: ROADMAP B1
+  try {
+    return PROTECTED_PATH.test(normalisePath(filePath, cwd));
+  } catch {
+    return true;
+  }
+}
+
+function assess(tool, cmd, filePath, cwd) {
   if (READ_TOOLS.includes(tool) || WRITE_TOOLS.includes(tool)) {
-    if (filePath && PROTECTED_PATH.test(filePath)) {
+    if (filePath && isProtected(filePath, cwd)) {
       const verb = WRITE_TOOLS.includes(tool) ? "writes to" : "reads";
       return { decision: "hold", reasons: [`${tool} ${verb} a protected path: ${filePath}`] };
     }
@@ -274,7 +301,7 @@ const server = http.createServer(async (req, res) => {
     const ti = input.tool_input || {};
     const cmd = ti.command || "";
     const filePath = ti.file_path || ti.path || ti.notebook_path || "";
-    const { decision, reasons } = assess(tool, cmd, filePath);
+    const { decision, reasons } = assess(tool, cmd, filePath, input.cwd);
 
     if (decision === "allow") {
       console.log(`ALLOW  ${tool}  ${cmd.slice(0, 70)}`);

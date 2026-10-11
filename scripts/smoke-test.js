@@ -207,8 +207,12 @@ async function decide(cmd, decision) {
 }
 
 const bash = (command) => ({ tool_name: "Bash", tool_input: { command } });
-const file = (tool, file_path) =>
-  ({ tool_name: tool, tool_input: tool === "Write" ? { file_path, content: "x" } : { file_path } });
+// `cwd` is a top-level payload field, not part of tool_input.
+const file = (tool, file_path, cwd) => ({
+  tool_name: tool,
+  tool_input: tool === "Write" ? { file_path, content: "x" } : { file_path },
+  ...(cwd ? { cwd } : {}),
+});
 
 const hasLabel = (label) => (reasons) =>
   assert(reasons.includes(label), `reasons [${reasons.join(", ")}] lack "${label}"`);
@@ -255,19 +259,34 @@ const POSIX_PROTECTED = [
   "/home/g/.aws/credentials",
   "/home/g/.ssh/authorized_keys",
 ];
-// PROTECTED_PATH only knows `/`, so these allow until ROADMAP 1.3.
+// Backslashes: these allowed until ROADMAP 1.3 converted `\` to `/`.
 const WINDOWS_PROTECTED = [
   "C:\\Users\\g\\.ssh\\id_rsa",
   "C:\\repo\\.env",
   "C:\\repo\\.claude\\settings.json",
+];
+// [path, cwd] pairs that go through normalising (ROADMAP 1.3). The `..`
+// cases carry a cwd so path.resolve() actually runs on them; notes.txt
+// matches only on the raw path, so it fails if the raw check is ever dropped.
+const NORMALISED_PROTECTED = [
+  ["~/.ssh/id_rsa"],
+  [".env", "/repo"],
+  ["settings.json", "/repo/.claude"],
+  ["..\\.ssh\\id_rsa", "C:\\Users\\g\\repo"],
+  ["/home/g/.ssh/../.ssh/id_rsa", "/repo"],
+  ["/home/g/.ssh/../notes.txt", "/repo"],
 ];
 for (const tool of ["Read", "Write"]) {
   for (const p of POSIX_PROTECTED) {
     test(`${tool} holds: ${p}`, () => expectHold(file(tool, p), protectedReason));
   }
   test(`${tool} allows: /repo/src/index.js`, () => expectAllow(file(tool, "/repo/src/index.js")));
+  test(`${tool} allows: notes.txt (cwd /repo)`, () => expectAllow(file(tool, "notes.txt", "/repo")));
   for (const p of WINDOWS_PROTECTED) {
-    test(`${tool} holds: ${p}`, () => expectHold(file(tool, p), protectedReason), { xfail: "until 1.3" });
+    test(`${tool} holds: ${p}`, () => expectHold(file(tool, p), protectedReason));
+  }
+  for (const [p, cwd] of NORMALISED_PROTECTED) {
+    test(`${tool} holds: ${p}${cwd ? ` (cwd ${cwd})` : ""}`, () => expectHold(file(tool, p, cwd), protectedReason));
   }
 }
 

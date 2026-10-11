@@ -27,8 +27,18 @@
 const http = require("http");
 const crypto = require("crypto");
 
-const PORT = 4517;
-const AUTO_DENY_MS = 5 * 60 * 1000; // auto-deny a pending request after 5 min
+// An integer from the environment if it's within [min, max], otherwise the
+// default. Falling back rather than clamping is deliberate: a bad value must
+// never disable the auto-deny timer or overflow it.
+function envInt(name, fallback, min, max) {
+  const n = Number(process.env[name]);
+  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+}
+
+const PORT = envInt("PORT", 4517, 1, 65535);
+// Auto-deny a pending request after 5 min by default. The cap is the largest
+// delay setTimeout accepts; above it Node fires the timer after 1 ms.
+const AUTO_DENY_MS = envInt("AUTO_DENY_MS", 5 * 60 * 1000, 1, 2147483647);
 
 // ---------------------------------------------------------------------------
 // Auth configuration
@@ -354,6 +364,10 @@ server.listen(PORT, () => {
   console.log(`  Dashboard:  http://localhost:${PORT}`);
   console.log(`  Hook URL:   http://localhost:${PORT}/pre-tool-use`);
   console.log(`  Auth:       required (AUTH_TOKEN set, ${AUTH_TOKEN.length} chars)`);
+  console.log(`  Hold:       ${AUTO_DENY_MS / 1000} s, then auto-deny`);
+  if (AUTO_DENY_MS >= 600000) {
+    console.log(`  \u26a0 Hold is 600 s or more \u2014 the hook times out at 600 s, so Claude Code stops waiting before the gateway decides.`);
+  }
   if (NTFY_TOPIC) {
     console.log(`  Push:       on, via ${NTFY_SERVER}`);
     console.log(`  Public URL: ${PUBLIC_URL}`);

@@ -279,6 +279,15 @@ const NORMALISED_PROTECTED = [
   ["/home/g/.ssh/../.ssh/id_rsa", "/repo"],
   ["/home/g/.ssh/../notes.txt", "/repo"],
 ];
+// ROADMAP B3: Windows and default macOS filesystems are case-insensitive, so
+// these are the same files as the lowercase ones.
+const MIXED_CASE_PROTECTED = [
+  "/repo/.ENV",
+  "/home/g/.SSH/config",
+  "/repo/.Claude/settings.json",
+  "C:\\Users\\g\\.Ssh\\config",
+  "/home/g/keys/ID_RSA",
+];
 for (const tool of ["Read", "Write"]) {
   for (const p of POSIX_PROTECTED) {
     test(`${tool} holds: ${p}`, () => expectHold(file(tool, p), protectedReason));
@@ -290,6 +299,9 @@ for (const tool of ["Read", "Write"]) {
   }
   for (const [p, cwd] of NORMALISED_PROTECTED) {
     test(`${tool} holds: ${p}${cwd ? ` (cwd ${cwd})` : ""}`, () => expectHold(file(tool, p, cwd), protectedReason));
+  }
+  for (const p of MIXED_CASE_PROTECTED) {
+    test(`${tool} holds: ${p}`, () => expectHold(file(tool, p), protectedReason));
   }
 }
 

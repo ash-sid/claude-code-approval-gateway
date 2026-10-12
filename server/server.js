@@ -84,8 +84,10 @@ const WRITE_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 // an Edit there rewrites the hook config and switches the gateway off
 // through the gateway. `.ssh` and `.claude` also match with no trailing
 // slash, because Grep and Glob take the directory itself as `path`.
+// Case-insensitive: on Windows and default macOS, /repo/.ENV is /repo/.env.
+// On a case-sensitive filesystem that only adds holds.
 const PROTECTED_PATH =
-  /(^|\/)\.env(\.|$)|(^|\/)(id_rsa|id_ed25519|authorized_keys)|(^|\/)\.aws\/credentials|(^|\/)\.ssh(\/|$)|(^|\/)\.claude(\/|$)/;
+  /(^|\/)\.env(\.|$)|(^|\/)(id_rsa|id_ed25519|authorized_keys)|(^|\/)\.aws\/credentials|(^|\/)\.ssh(\/|$)|(^|\/)\.claude(\/|$)/i;
 
 const DANGER = [
   { re: /\brm\s+-\w*[rf]/i,            label: "Force/recursive delete (rm -rf)" },

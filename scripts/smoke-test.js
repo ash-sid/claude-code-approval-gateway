@@ -293,6 +293,17 @@ for (const tool of ["Read", "Write"]) {
   }
 }
 
+// ROADMAP B2: Grep and Glob take a directory in `path`, usually without a
+// trailing slash, so the protected directories must match without one.
+const dir = (tool, path) => ({ tool_name: tool, tool_input: { pattern: "x", path } });
+const PROTECTED_DIRS = ["/home/g/.ssh", "/repo/.claude", "C:\\Users\\g\\.ssh", "C:\\repo\\.claude"];
+for (const tool of ["Grep", "Glob"]) {
+  for (const p of PROTECTED_DIRS) {
+    test(`${tool} holds: path ${p}`, () => expectHold(dir(tool, p), protectedReason));
+  }
+  test(`${tool} allows: path /repo/src`, () => expectAllow(dir(tool, "/repo/src")));
+}
+
 const unrecognized = (reasons) =>
   assert(reasons.some((r) => r.startsWith("Unrecognized tool")), `reasons [${reasons.join(", ")}]`);
 test("unknown tool holds: mcp__x__y", () => expectHold({ tool_name: "mcp__x__y", tool_input: {} }, unrecognized));

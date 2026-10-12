@@ -82,9 +82,10 @@ const WRITE_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
 // Paths no file tool may touch without a human. `.claude/` is here because
 // an Edit there rewrites the hook config and switches the gateway off
-// through the gateway.
+// through the gateway. `.ssh` and `.claude` also match with no trailing
+// slash, because Grep and Glob take the directory itself as `path`.
 const PROTECTED_PATH =
-  /(^|\/)\.env(\.|$)|(^|\/)(id_rsa|id_ed25519|authorized_keys)|(^|\/)\.aws\/credentials|(^|\/)\.ssh\/|(^|\/)\.claude\//;
+  /(^|\/)\.env(\.|$)|(^|\/)(id_rsa|id_ed25519|authorized_keys)|(^|\/)\.aws\/credentials|(^|\/)\.ssh(\/|$)|(^|\/)\.claude(\/|$)/;
 
 const DANGER = [
   { re: /\brm\s+-\w*[rf]/i,            label: "Force/recursive delete (rm -rf)" },

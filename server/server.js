@@ -393,6 +393,12 @@ async function handle(req, res) {
         // Never pass a non-string into updatedInput (ROADMAP B1).
         console.log(`DENY   ${id} (malformed command)`);
         hookDeny(p.res, "Denied: the decision carried a malformed command");
+      } else if (typeof command === "string" && !command.trim()) {
+        // A cleared Alter box isn't an approval of the original: "" is falsy,
+        // so it used to approve the unedited command, and whitespace would
+        // have been sent as a blank one (ROADMAP B4).
+        console.log(`DENY   ${id} (Alter to an empty command)`);
+        hookDeny(p.res, "Denied: the reviewer cleared the command");
       } else if (altered && p.tool !== "Bash") {
         // updatedInput.command is the Bash shape, so an edit to any other tool
         // can't be applied. Approving would run the unedited original, which

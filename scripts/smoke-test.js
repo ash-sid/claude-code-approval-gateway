@@ -390,6 +390,22 @@ test("Alter on Bash returns updatedInput.command", async () => {
     `updatedInput ${JSON.stringify(h.updatedInput)}`);
 });
 
+// ROADMAP B4: clearing the Alter box and approving must not run the
+// original. An Alter left unchanged is a plain Approve and still allows.
+for (const [name, command] of [["an empty command", ""], ["a whitespace-only command", "  \n "]]) {
+  test(`Alter to ${name} denies`, async () => {
+    const h = await decide("rm -rf empty-me", { action: "approve", command });
+    assert(h.permissionDecision === "deny", `got ${h.permissionDecision}`);
+    assert(!("updatedInput" in h), `updatedInput ${JSON.stringify(h.updatedInput)}`);
+  });
+}
+
+test("Alter left unchanged returns allow, no updatedInput", async () => {
+  const h = await decide("rm -rf same-me", { action: "approve", command: "rm -rf same-me" });
+  assert(h.permissionDecision === "allow", `got ${h.permissionDecision}`);
+  assert(!("updatedInput" in h), `updatedInput ${JSON.stringify(h.updatedInput)}`);
+});
+
 // ROADMAP 1.4: Alter rewrites Bash only. An edit to a held Write can't be
 // applied, and approving would run the unedited original, so it denies.
 test("Alter on a held Write denies, no updatedInput", async () => {

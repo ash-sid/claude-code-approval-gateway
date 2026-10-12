@@ -419,6 +419,15 @@ async function main() {
     await server.closed;
   }
 
+  // ROADMAP 1.5: a call the gateway answered itself must never also log
+  // ABANDONED, so the disconnect case's should be the only one. That also shows
+  // the disconnect case was cleared by 'close', not by the auto-deny timer.
+  // Counted after the child has exited, so every line it wrote is in the log.
+  const abandoned = (server.log().match(/^ABANDONED /gm) || []).length;
+  const status = abandoned === 1 ? "PASS" : "FAIL";
+  counts[status]++;
+  console.log(`${status.padEnd(5)}  gateway log has exactly one ABANDONED${status === "FAIL" ? `  -- found ${abandoned}` : ""}`);
+
   console.log(`\n${counts.PASS} passed, ${counts.FAIL} failed, ${counts.XFAIL} xfail, ${counts.XPASS} xpass`);
   if (counts.FAIL || counts.XPASS) {
     console.log(`\n--- gateway log ---\n${server.log()}`);

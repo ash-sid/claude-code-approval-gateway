@@ -313,8 +313,8 @@ const server = http.createServer(async (req, res) => {
     const timer = setTimeout(() => {
       if (pending.has(id)) {
         console.log(`AUTO-DENY (timeout)  ${id}`);
-        hookDeny(res, "Auto-denied: no approval within time limit");
         pending.delete(id);
+        hookDeny(res, "Auto-denied: no approval within time limit");
       }
     }, AUTO_DENY_MS);
 

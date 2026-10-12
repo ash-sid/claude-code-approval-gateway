@@ -134,9 +134,12 @@ function isProtected(filePath, cwd) {
 function assess(tool, cmd, filePath, cwd) {
   // Claude Code sends strings. Anything else is malformed input, which holds
   // like an unknown tool instead of reaching a .slice() that would crash the
-  // gateway, and a dead gateway fails open (ROADMAP B1).
+  // gateway, and a dead gateway fails open (ROADMAP B1). The string fields are
+  // still assessed, so the card keeps any DANGER or protected-path reason.
   if (typeof cmd !== "string" || typeof filePath !== "string") {
-    return { decision: "hold", reasons: ["Malformed tool input (not a string)"] };
+    const rest = assess(tool, typeof cmd === "string" ? cmd : "",
+      typeof filePath === "string" ? filePath : "", cwd);
+    return { decision: "hold", reasons: ["Malformed tool input (not a string)", ...rest.reasons] };
   }
   if (READ_TOOLS.includes(tool) || WRITE_TOOLS.includes(tool)) {
     if (filePath && isProtected(filePath, cwd)) {

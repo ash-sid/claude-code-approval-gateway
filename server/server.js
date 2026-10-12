@@ -337,7 +337,10 @@ async function handle(req, res) {
     };
     pending.set(id, entry);
     console.log(`HELD   ${tool}  ${entry.cmd.slice(0, 70)}  [${reasons.join(", ")}]`);
-    notify(entry); // fire-and-forget push to the phone
+    // Fire-and-forget push to the phone. notify() catches its own network
+    // errors; this catches a throw while building the payload, which would
+    // otherwise be an unhandled rejection that exits the gateway.
+    notify(entry).catch((e) => console.log(`ntfy error: ${e && e.message}`));
 
     // If Claude Code gives up first, clean up so we don't leak the response.
     // Watch `res`, not `req`: readBody() has already drained the request
@@ -387,31 +390,39 @@ async function handle(req, res) {
     if (!p) return send(res, 404, { error: "not found or already handled" });
     clearTimeout(p.timer);
     pending.delete(id);
-    if (action === "approve") {
-      const altered = command && command !== p.cmd ? command : undefined;
-      if (command !== undefined && typeof command !== "string") {
-        // Never pass a non-string into updatedInput (ROADMAP B1).
-        console.log(`DENY   ${id} (malformed command)`);
-        hookDeny(p.res, "Denied: the decision carried a malformed command");
-      } else if (typeof command === "string" && !command.trim()) {
-        // A cleared Alter box isn't an approval of the original: "" is falsy,
-        // so it used to approve the unedited command, and whitespace would
-        // have been sent as a blank one (ROADMAP B4).
-        console.log(`DENY   ${id} (Alter to an empty command)`);
-        hookDeny(p.res, "Denied: the reviewer cleared the command");
-      } else if (altered && p.tool !== "Bash") {
-        // updatedInput.command is the Bash shape, so an edit to any other tool
-        // can't be applied. Approving would run the unedited original, which
-        // isn't what was approved: deny instead.
-        console.log(`DENY   ${id} (Alter on ${p.tool})`);
-        hookDeny(p.res, "Denied: the reviewer edited this call, and Alter only applies to Bash");
+    try {
+      if (action === "approve") {
+        const altered = command && command !== p.cmd ? command : undefined;
+        if (command !== undefined && typeof command !== "string") {
+          // Never pass a non-string into updatedInput (ROADMAP B1).
+          console.log(`DENY   ${id} (malformed command)`);
+          hookDeny(p.res, "Denied: the decision carried a malformed command");
+        } else if (typeof command === "string" && !command.trim()) {
+          // A cleared Alter box isn't an approval of the original: "" is falsy,
+          // so it used to approve the unedited command, and whitespace would
+          // have been sent as a blank one (ROADMAP B4).
+          console.log(`DENY   ${id} (Alter to an empty command)`);
+          hookDeny(p.res, "Denied: the reviewer cleared the command");
+        } else if (altered && p.tool !== "Bash") {
+          // updatedInput.command is the Bash shape, so an edit to any other tool
+          // can't be applied. Approving would run the unedited original, which
+          // isn't what was approved: deny instead.
+          console.log(`DENY   ${id} (Alter on ${p.tool})`);
+          hookDeny(p.res, "Denied: the reviewer edited this call, and Alter only applies to Bash");
+        } else {
+          console.log(`APPROVE ${id}${altered ? " (altered)" : ""}`);
+          hookAllow(p.res, "Approved via dashboard", altered);
+        }
       } else {
-        console.log(`APPROVE ${id}${altered ? " (altered)" : ""}`);
-        hookAllow(p.res, "Approved via dashboard", altered);
+        console.log(`DENY   ${id}`);
+        hookDeny(p.res, "Denied via dashboard");
       }
-    } else {
-      console.log(`DENY   ${id}`);
-      hookDeny(p.res, "Denied via dashboard");
+    } catch (e) {
+      // The entry is out of the queue and its timer is cleared, so nothing
+      // else will answer the held call. Deny it here; the catch-all then
+      // answers this request with a 500.
+      if (!p.res.headersSent) hookDeny(p.res, "Denied: the gateway hit an error on this decision");
+      throw e;
     }
     return send(res, 200, { ok: true });
   }

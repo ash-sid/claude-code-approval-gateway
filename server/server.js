@@ -121,7 +121,6 @@ function normalisePath(filePath, cwd) {
 // normalising can only add holds. A failure while normalising holds too.
 function isProtected(filePath, cwd) {
   if (PROTECTED_PATH.test(filePath)) return true;
-  if (typeof filePath !== "string") return false; // non-strings: ROADMAP B1
   try {
     return PROTECTED_PATH.test(normalisePath(filePath, cwd));
   } catch {
@@ -130,6 +129,12 @@ function isProtected(filePath, cwd) {
 }
 
 function assess(tool, cmd, filePath, cwd) {
+  // Claude Code sends strings. Anything else is malformed input, which holds
+  // like an unknown tool instead of reaching a .slice() that would crash the
+  // gateway, and a dead gateway fails open (ROADMAP B1).
+  if (typeof cmd !== "string" || typeof filePath !== "string") {
+    return { decision: "hold", reasons: ["Malformed tool input (not a string)"] };
+  }
   if (READ_TOOLS.includes(tool) || WRITE_TOOLS.includes(tool)) {
     if (filePath && isProtected(filePath, cwd)) {
       const verb = WRITE_TOOLS.includes(tool) ? "writes to" : "reads";
@@ -272,8 +277,12 @@ function readBody(req) {
   return new Promise((resolve) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
+    // Anything but a JSON object (bad JSON, `null`, a bare number) reads as
+    // {}, so the property reads and destructuring that follow can't throw.
     req.on("end", () => {
-      try { resolve(JSON.parse(raw || "{}")); } catch { resolve({}); }
+      let body;
+      try { body = JSON.parse(raw || "{}"); } catch { body = {}; }
+      resolve(body && typeof body === "object" ? body : {});
     });
   });
 }
@@ -281,7 +290,7 @@ function readBody(req) {
 // ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
-const server = http.createServer(async (req, res) => {
+async function handle(req, res) {
   const [url, qs] = req.url.split("?");
   const query = new URLSearchParams(qs || "");
 
@@ -317,7 +326,12 @@ const server = http.createServer(async (req, res) => {
     }, AUTO_DENY_MS);
 
     // A held Write/Edit has no `command`; show the path so the card isn't blank.
-    const entry = { id, tool, cmd: cmd || filePath, reasons, createdAt: Date.now(), res, timer };
+    // Malformed input is shown as its JSON, so the card's `cmd` is a string.
+    const shown = cmd || filePath;
+    const entry = {
+      id, tool, cmd: typeof shown === "string" ? shown : JSON.stringify(shown),
+      reasons, createdAt: Date.now(), res, timer,
+    };
     pending.set(id, entry);
     console.log(`HELD   ${tool}  ${entry.cmd.slice(0, 70)}  [${reasons.join(", ")}]`);
     notify(entry); // fire-and-forget push to the phone
@@ -372,7 +386,11 @@ const server = http.createServer(async (req, res) => {
     pending.delete(id);
     if (action === "approve") {
       const altered = command && command !== p.cmd ? command : undefined;
-      if (altered && p.tool !== "Bash") {
+      if (command !== undefined && typeof command !== "string") {
+        // Never pass a non-string into updatedInput (ROADMAP B1).
+        console.log(`DENY   ${id} (malformed command)`);
+        hookDeny(p.res, "Denied: the decision carried a malformed command");
+      } else if (altered && p.tool !== "Bash") {
         // updatedInput.command is the Bash shape, so an edit to any other tool
         // can't be applied. Approving would run the unedited original, which
         // isn't what was approved: deny instead.
@@ -390,6 +408,24 @@ const server = http.createServer(async (req, res) => {
   }
 
   send(res, 404, { error: "not found" });
+}
+
+// Fail closed on bugs not yet found (ROADMAP B1). A throw in the async handler
+// is an unhandled rejection, which exits Node, and a dead gateway fails open.
+// Answer deny instead, and drop any card already parked for this call so its
+// timer can't answer it a second time. Only the path is logged: the query
+// string can carry the token.
+const server = http.createServer((req, res) => {
+  handle(req, res).catch((e) => {
+    const url = req.url.split("?")[0];
+    console.log(`ERROR  ${req.method} ${url}: ${e && e.message}`);
+    for (const [id, p] of pending) {
+      if (p.res === res) { clearTimeout(p.timer); pending.delete(id); }
+    }
+    if (res.headersSent) return;
+    if (url === "/pre-tool-use") hookDeny(res, "Denied: the gateway hit an error on this call");
+    else send(res, 500, { error: "internal error" });
+  });
 });
 
 server.listen(PORT, () => {

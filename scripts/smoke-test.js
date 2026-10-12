@@ -151,9 +151,11 @@ function assert(cond, msg) {
 // for a hold, where `response` resolves once the hold is decided.
 async function submit(body) {
   const ti = (body && body.tool_input) || {};
+  const shown = ti.command || ti.file_path || ti.path || ti.notebook_path || "";
   const want = {
     tool: (body && body.tool_name) || "",
-    cmd: ti.command || ti.file_path || ti.path || ti.notebook_path || "",
+    // The gateway shows a non-string field as its JSON (ROADMAP B1).
+    cmd: typeof shown === "string" ? shown : JSON.stringify(shown),
   };
 
   const ctrl = new AbortController();
@@ -297,6 +299,16 @@ test("unknown tool holds: mcp__x__y", () => expectHold({ tool_name: "mcp__x__y",
 test("empty body holds", () => expectHold("", unrecognized));
 test("malformed body holds: {not json", () => expectHold("{not json", unrecognized));
 
+// ROADMAP B1: Claude Code sends strings, but malformed input must hold, never
+// crash the gateway: a dead gateway fails open for every call after it.
+const malformed = (reasons) =>
+  assert(reasons.some((r) => r.startsWith("Malformed tool input")), `reasons [${reasons.join(", ")}]`);
+test("Bash holds: command 123", () => expectHold(bash(123), malformed));
+test("Bash holds: command {}", () => expectHold(bash({}), malformed));
+test("Read holds: file_path 123", () => expectHold(file("Read", 123), malformed));
+test("null body holds", () => expectHold("null", unrecognized));
+test("gateway still answers after malformed input", () => expectAllow(bash("ls")));
+
 test("held call auto-denies after AUTO_DENY_MS", async () => {
   const started = Date.now();
   const r = await submit(bash("rm -rf auto-deny"));
@@ -378,6 +390,13 @@ test('action "maybe" denies', async () => {
 test("missing action denies", async () => {
   const h = await decide("rm -rf no-action", {});
   assert(h.permissionDecision === "deny", `got ${h.permissionDecision}`);
+});
+
+// ROADMAP B1: a non-string command must not reach updatedInput.
+test("Approve with a non-string command denies", async () => {
+  const h = await decide("rm -rf number-me", { action: "approve", command: 123 });
+  assert(h.permissionDecision === "deny", `got ${h.permissionDecision}`);
+  assert(!("updatedInput" in h), `updatedInput ${JSON.stringify(h.updatedInput)}`);
 });
 
 // ---------------------------------------------------------------------------

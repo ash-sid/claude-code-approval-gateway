@@ -119,7 +119,7 @@ The hook can be registered at either level. Both use the same block:
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "",
+        "matcher": "*",
         "hooks": [
           { "type": "http", "url": "http://localhost:4517/pre-tool-use", "timeout": 600 }
         ]
@@ -145,7 +145,7 @@ folder some other way won't pick it up.
 > that would fix it. Run Claude Code in a disposable project instead.
 
 The `http` hook type means Claude Code POSTs the payload directly — no shell wrapper.
-`matcher: ""` fires on every tool; narrow to `"Bash"` to gate only shell commands.
+`matcher: "*"` fires on every tool; narrow to `"Bash"` to gate only shell commands.
 
 `timeout` is in **seconds** and must exceed the gateway's hold window, because these
 are two independent timers. The gateway sends `deny` when its own timer expires, but

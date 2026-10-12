@@ -80,10 +80,9 @@ const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replac
 const READ_TOOLS = ["Read", "Glob", "Grep", "NotebookRead"];
 const WRITE_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
-// Paths no file tool may touch without a human. Mirrors protectedPathPattern
-// in server/src/policy.config.ts — keep the two in sync — plus `.claude/`,
-// which the TS pattern does not yet cover: an Edit there rewrites the hook
-// config and switches the gateway off through the gateway.
+// Paths no file tool may touch without a human. `.claude/` is here because
+// an Edit there rewrites the hook config and switches the gateway off
+// through the gateway.
 const PROTECTED_PATH =
   /(^|\/)\.env(\.|$)|(^|\/)(id_rsa|id_ed25519|authorized_keys)|(^|\/)\.aws\/credentials|(^|\/)\.ssh\/|(^|\/)\.claude\//;
 
@@ -137,8 +136,7 @@ function assess(tool, cmd, filePath, cwd) {
       return { decision: "hold", reasons: [`${tool} ${verb} a protected path: ${filePath}`] };
     }
     // Ordinary files still auto-allow: this server has no "ask" verdict, and
-    // holding every edit would make it unusable. The TS port returns "ask"
-    // here instead.
+    // holding every edit would make it unusable.
     return { decision: "allow", reasons: [] };
   }
   if (tool === "Bash") {

@@ -26,9 +26,21 @@
 
 const http = require("http");
 const crypto = require("crypto");
+const os = require("os");
+const path = require("path");
 
-const PORT = 4517;
-const AUTO_DENY_MS = 5 * 60 * 1000; // auto-deny a pending request after 5 min
+// An integer from the environment if it's within [min, max], otherwise the
+// default. Falling back rather than clamping is deliberate: a bad value must
+// never disable the auto-deny timer or overflow it.
+function envInt(name, fallback, min, max) {
+  const n = Number(process.env[name]);
+  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+}
+
+const PORT = envInt("PORT", 4517, 1, 65535);
+// Auto-deny a pending request after 5 min by default. The cap is the largest
+// delay setTimeout accepts; above it Node fires the timer after 1 ms.
+const AUTO_DENY_MS = envInt("AUTO_DENY_MS", 5 * 60 * 1000, 1, 2147483647);
 
 // ---------------------------------------------------------------------------
 // Auth configuration
@@ -68,12 +80,14 @@ const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replac
 const READ_TOOLS = ["Read", "Glob", "Grep", "NotebookRead"];
 const WRITE_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
-// Paths no file tool may touch without a human. Mirrors protectedPathPattern
-// in server/src/policy.config.ts — keep the two in sync — plus `.claude/`,
-// which the TS pattern does not yet cover: an Edit there rewrites the hook
-// config and switches the gateway off through the gateway.
+// Paths no file tool may touch without a human. `.claude/` is here because
+// an Edit there rewrites the hook config and switches the gateway off
+// through the gateway. `.ssh` and `.claude` also match with no trailing
+// slash, because Grep and Glob take the directory itself as `path`.
+// Case-insensitive: on Windows and default macOS, /repo/.ENV is /repo/.env.
+// On a case-sensitive filesystem that only adds holds.
 const PROTECTED_PATH =
-  /(^|\/)\.env(\.|$)|(^|\/)(id_rsa|id_ed25519|authorized_keys)|(^|\/)\.aws\/credentials|(^|\/)\.ssh\/|(^|\/)\.claude\//;
+  /(^|\/)\.env(\.|$)|(^|\/)(id_rsa|id_ed25519|authorized_keys)|(^|\/)\.aws\/credentials|(^|\/)\.ssh(\/|$)|(^|\/)\.claude(\/|$)/i;
 
 const DANGER = [
   { re: /\brm\s+-\w*[rf]/i,            label: "Force/recursive delete (rm -rf)" },
@@ -93,15 +107,47 @@ const DANGER = [
   { re: /\.env\b/,                     label: "Touches a .env file" },
 ];
 
-function assess(tool, cmd, filePath) {
+// The path as the session sees it: a leading ~ expanded, a relative path
+// resolved against the session's cwd (not the gateway's), then `\` turned
+// into `/` so PROTECTED_PATH can match Windows paths. Converting comes last
+// because path.resolve() on Windows produces backslashes. Symlinks are not
+// followed.
+function normalisePath(filePath, cwd) {
+  let p = filePath;
+  if (p === "~" || p.startsWith("~/") || p.startsWith("~\\")) p = os.homedir() + p.slice(1);
+  if (typeof cwd === "string" && cwd) p = path.resolve(cwd, p);
+  return p.replace(/\\/g, "/");
+}
+
+// Raw OR normalised. Resolving can drop a match (/home/g/.ssh/../notes.txt
+// becomes /home/g/notes.txt), so the raw test stays exactly as it was and
+// normalising can only add holds. A failure while normalising holds too.
+function isProtected(filePath, cwd) {
+  if (PROTECTED_PATH.test(filePath)) return true;
+  try {
+    return PROTECTED_PATH.test(normalisePath(filePath, cwd));
+  } catch {
+    return true;
+  }
+}
+
+function assess(tool, cmd, filePath, cwd) {
+  // Claude Code sends strings. Anything else is malformed input, which holds
+  // like an unknown tool instead of reaching a .slice() that would crash the
+  // gateway, and a dead gateway fails open (ROADMAP B1). The string fields are
+  // still assessed, so the card keeps any DANGER or protected-path reason.
+  if (typeof cmd !== "string" || typeof filePath !== "string") {
+    const rest = assess(tool, typeof cmd === "string" ? cmd : "",
+      typeof filePath === "string" ? filePath : "", cwd);
+    return { decision: "hold", reasons: ["Malformed tool input (not a string)", ...rest.reasons] };
+  }
   if (READ_TOOLS.includes(tool) || WRITE_TOOLS.includes(tool)) {
-    if (filePath && PROTECTED_PATH.test(filePath)) {
+    if (filePath && isProtected(filePath, cwd)) {
       const verb = WRITE_TOOLS.includes(tool) ? "writes to" : "reads";
       return { decision: "hold", reasons: [`${tool} ${verb} a protected path: ${filePath}`] };
     }
     // Ordinary files still auto-allow: this server has no "ask" verdict, and
-    // holding every edit would make it unusable. The TS port returns "ask"
-    // here instead.
+    // holding every edit would make it unusable.
     return { decision: "allow", reasons: [] };
   }
   if (tool === "Bash") {
@@ -237,8 +283,12 @@ function readBody(req) {
   return new Promise((resolve) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
+    // Anything but a JSON object (bad JSON, `null`, a bare number) reads as
+    // {}, so the property reads and destructuring that follow can't throw.
     req.on("end", () => {
-      try { resolve(JSON.parse(raw || "{}")); } catch { resolve({}); }
+      let body;
+      try { body = JSON.parse(raw || "{}"); } catch { body = {}; }
+      resolve(body && typeof body === "object" ? body : {});
     });
   });
 }
@@ -246,7 +296,7 @@ function readBody(req) {
 // ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
-const server = http.createServer(async (req, res) => {
+async function handle(req, res) {
   const [url, qs] = req.url.split("?");
   const query = new URLSearchParams(qs || "");
 
@@ -264,7 +314,7 @@ const server = http.createServer(async (req, res) => {
     const ti = input.tool_input || {};
     const cmd = ti.command || "";
     const filePath = ti.file_path || ti.path || ti.notebook_path || "";
-    const { decision, reasons } = assess(tool, cmd, filePath);
+    const { decision, reasons } = assess(tool, cmd, filePath, input.cwd);
 
     if (decision === "allow") {
       console.log(`ALLOW  ${tool}  ${cmd.slice(0, 70)}`);
@@ -276,16 +326,24 @@ const server = http.createServer(async (req, res) => {
     const timer = setTimeout(() => {
       if (pending.has(id)) {
         console.log(`AUTO-DENY (timeout)  ${id}`);
-        hookDeny(res, "Auto-denied: no approval within time limit");
         pending.delete(id);
+        hookDeny(res, "Auto-denied: no approval within time limit");
       }
     }, AUTO_DENY_MS);
 
     // A held Write/Edit has no `command`; show the path so the card isn't blank.
-    const entry = { id, tool, cmd: cmd || filePath, reasons, createdAt: Date.now(), res, timer };
+    // Malformed input is shown as its JSON, so the card's `cmd` is a string.
+    const shown = cmd || filePath;
+    const entry = {
+      id, tool, cmd: typeof shown === "string" ? shown : JSON.stringify(shown),
+      reasons, createdAt: Date.now(), res, timer,
+    };
     pending.set(id, entry);
     console.log(`HELD   ${tool}  ${entry.cmd.slice(0, 70)}  [${reasons.join(", ")}]`);
-    notify(entry); // fire-and-forget push to the phone
+    // Fire-and-forget push to the phone. notify() catches its own network
+    // errors; this catches a throw while building the payload, which would
+    // otherwise be an unhandled rejection that exits the gateway.
+    notify(entry).catch((e) => console.log(`ntfy error: ${e && e.message}`));
 
     // If Claude Code gives up first, clean up so we don't leak the response.
     // Watch `res`, not `req`: readBody() has already drained the request
@@ -335,18 +393,62 @@ const server = http.createServer(async (req, res) => {
     if (!p) return send(res, 404, { error: "not found or already handled" });
     clearTimeout(p.timer);
     pending.delete(id);
-    if (action === "approve") {
-      const altered = command && command !== p.cmd ? command : undefined;
-      console.log(`APPROVE ${id}${altered ? " (altered)" : ""}`);
-      hookAllow(p.res, "Approved via dashboard", altered);
-    } else {
-      console.log(`DENY   ${id}`);
-      hookDeny(p.res, "Denied via dashboard");
+    try {
+      if (action === "approve") {
+        const altered = command && command !== p.cmd ? command : undefined;
+        if (command !== undefined && typeof command !== "string") {
+          // Never pass a non-string into updatedInput (ROADMAP B1).
+          console.log(`DENY   ${id} (malformed command)`);
+          hookDeny(p.res, "Denied: the decision carried a malformed command");
+        } else if (typeof command === "string" && !command.trim()) {
+          // A cleared Alter box isn't an approval of the original: "" is falsy,
+          // so it used to approve the unedited command, and whitespace would
+          // have been sent as a blank one (ROADMAP B4).
+          console.log(`DENY   ${id} (Alter to an empty command)`);
+          hookDeny(p.res, "Denied: the reviewer cleared the command");
+        } else if (altered && p.tool !== "Bash") {
+          // updatedInput.command is the Bash shape, so an edit to any other tool
+          // can't be applied. Approving would run the unedited original, which
+          // isn't what was approved: deny instead.
+          console.log(`DENY   ${id} (Alter on ${p.tool})`);
+          hookDeny(p.res, "Denied: the reviewer edited this call, and Alter only applies to Bash");
+        } else {
+          console.log(`APPROVE ${id}${altered ? " (altered)" : ""}`);
+          hookAllow(p.res, "Approved via dashboard", altered);
+        }
+      } else {
+        console.log(`DENY   ${id}`);
+        hookDeny(p.res, "Denied via dashboard");
+      }
+    } catch (e) {
+      // The entry is out of the queue and its timer is cleared, so nothing
+      // else will answer the held call. Deny it here; the catch-all then
+      // answers this request with a 500.
+      if (!p.res.headersSent) hookDeny(p.res, "Denied: the gateway hit an error on this decision");
+      throw e;
     }
     return send(res, 200, { ok: true });
   }
 
   send(res, 404, { error: "not found" });
+}
+
+// Fail closed on bugs not yet found (ROADMAP B1). A throw in the async handler
+// is an unhandled rejection, which exits Node, and a dead gateway fails open.
+// Answer deny instead, and drop any card already parked for this call so its
+// timer can't answer it a second time. Only the path is logged: the query
+// string can carry the token.
+const server = http.createServer((req, res) => {
+  handle(req, res).catch((e) => {
+    const url = req.url.split("?")[0];
+    console.log(`ERROR  ${req.method} ${url}: ${e && e.message}`);
+    for (const [id, p] of pending) {
+      if (p.res === res) { clearTimeout(p.timer); pending.delete(id); }
+    }
+    if (res.headersSent) return;
+    if (url === "/pre-tool-use") hookDeny(res, "Denied: the gateway hit an error on this call");
+    else send(res, 500, { error: "internal error" });
+  });
 });
 
 server.listen(PORT, () => {
@@ -354,6 +456,10 @@ server.listen(PORT, () => {
   console.log(`  Dashboard:  http://localhost:${PORT}`);
   console.log(`  Hook URL:   http://localhost:${PORT}/pre-tool-use`);
   console.log(`  Auth:       required (AUTH_TOKEN set, ${AUTH_TOKEN.length} chars)`);
+  console.log(`  Hold:       ${AUTO_DENY_MS / 1000} s, then auto-deny`);
+  if (AUTO_DENY_MS >= 600000) {
+    console.log(`  \u26a0 Hold is 600 s or more \u2014 the hook times out at 600 s, so Claude Code stops waiting before the gateway decides.`);
+  }
   if (NTFY_TOPIC) {
     console.log(`  Push:       on, via ${NTFY_SERVER}`);
     console.log(`  Public URL: ${PUBLIC_URL}`);
@@ -430,6 +536,7 @@ const DASHBOARD = `<!doctype html>
     if(!list.length){ q.innerHTML = '<div class="empty">No pending requests. You\\'re all caught up.</div>'; return; }
     q.innerHTML = list.map(function(p){
       var risks = p.reasons.map(function(r){ return '<span class="risk">'+esc(r)+'</span>'; }).join("");
+      var bash = p.tool === "Bash";
       return ''
         + '<div class="card" data-id="'+p.id+'">'
         +   '<div class="top"><span class="badge">Approval required</span>'
@@ -438,10 +545,10 @@ const DASHBOARD = `<!doctype html>
         +   '<div class="risks">'+risks+'</div>'
         +   '<div class="actions">'
         +     '<button class="approve" onclick="decide(\\''+p.id+'\\',\\'approve\\')">Approve</button>'
-        +     '<button class="alter" onclick="toggleAlter(\\''+p.id+'\\')">Alter</button>'
+        +     (bash ? '<button class="alter" onclick="toggleAlter(\\''+p.id+'\\')">Alter</button>' : '')
         +     '<button class="deny" onclick="decide(\\''+p.id+'\\',\\'deny\\')">Deny</button>'
         +   '</div>'
-        +   '<div class="hint">Alter lets you edit the command before approving.</div>'
+        +   (bash ? '<div class="hint">Alter lets you edit the command before approving.</div>' : '')
         + '</div>';
     }).join("");
   }

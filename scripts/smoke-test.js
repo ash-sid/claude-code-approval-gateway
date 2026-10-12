@@ -197,9 +197,10 @@ async function expectAllow(body) {
   assert(a.status === 200 && out(a).permissionDecision === "allow", `expected allow, got ${describe(a)}`);
 }
 
-// Hold a Bash call, post a decision for it, and return the hook's output.
-async function decide(cmd, decision) {
-  const r = await submit(bash(cmd));
+// Hold a call (a string is a Bash command), post a decision for it, and
+// return the hook's output.
+async function decide(call, decision) {
+  const r = await submit(typeof call === "string" ? bash(call) : call);
   assertHeld(r);
   const d = await post("/api/decision", { id: r.entry.id, ...decision });
   assert(d.status === 200, `/api/decision returned ${d.status}`);
@@ -352,6 +353,21 @@ test("Alter on Bash returns updatedInput.command", async () => {
   assert(h.permissionDecision === "allow", `got ${h.permissionDecision}`);
   assert(h.updatedInput && h.updatedInput.command === "rm -r alter-me/tmp",
     `updatedInput ${JSON.stringify(h.updatedInput)}`);
+});
+
+// ROADMAP 1.4: Alter rewrites Bash only. An edit to a held Write can't be
+// applied, and approving would run the unedited original, so it denies.
+test("Alter on a held Write denies, no updatedInput", async () => {
+  const h = await decide(file("Write", "/repo/.env"), { action: "approve", command: "/repo/.env.example" });
+  assert(h.permissionDecision === "deny", `got ${h.permissionDecision}`);
+  assert(!("updatedInput" in h), `updatedInput ${JSON.stringify(h.updatedInput)}`);
+});
+
+// The deny is for edits only: a plain Approve (the phone's button) still allows.
+test("Approve on a held Write returns allow, no updatedInput", async () => {
+  const h = await decide(file("Write", "/repo/.env"), { action: "approve" });
+  assert(h.permissionDecision === "allow", `got ${h.permissionDecision}`);
+  assert(!("updatedInput" in h), `updatedInput ${JSON.stringify(h.updatedInput)}`);
 });
 
 test('action "maybe" denies', async () => {

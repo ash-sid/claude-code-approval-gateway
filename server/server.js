@@ -374,8 +374,16 @@ const server = http.createServer(async (req, res) => {
     pending.delete(id);
     if (action === "approve") {
       const altered = command && command !== p.cmd ? command : undefined;
-      console.log(`APPROVE ${id}${altered ? " (altered)" : ""}`);
-      hookAllow(p.res, "Approved via dashboard", altered);
+      if (altered && p.tool !== "Bash") {
+        // updatedInput.command is the Bash shape, so an edit to any other tool
+        // can't be applied. Approving would run the unedited original, which
+        // isn't what was approved: deny instead.
+        console.log(`DENY   ${id} (Alter on ${p.tool})`);
+        hookDeny(p.res, "Denied: the reviewer edited this call, and Alter only applies to Bash");
+      } else {
+        console.log(`APPROVE ${id}${altered ? " (altered)" : ""}`);
+        hookAllow(p.res, "Approved via dashboard", altered);
+      }
     } else {
       console.log(`DENY   ${id}`);
       hookDeny(p.res, "Denied via dashboard");
@@ -471,6 +479,7 @@ const DASHBOARD = `<!doctype html>
     if(!list.length){ q.innerHTML = '<div class="empty">No pending requests. You\\'re all caught up.</div>'; return; }
     q.innerHTML = list.map(function(p){
       var risks = p.reasons.map(function(r){ return '<span class="risk">'+esc(r)+'</span>'; }).join("");
+      var bash = p.tool === "Bash";
       return ''
         + '<div class="card" data-id="'+p.id+'">'
         +   '<div class="top"><span class="badge">Approval required</span>'
@@ -479,10 +488,10 @@ const DASHBOARD = `<!doctype html>
         +   '<div class="risks">'+risks+'</div>'
         +   '<div class="actions">'
         +     '<button class="approve" onclick="decide(\\''+p.id+'\\',\\'approve\\')">Approve</button>'
-        +     '<button class="alter" onclick="toggleAlter(\\''+p.id+'\\')">Alter</button>'
+        +     (bash ? '<button class="alter" onclick="toggleAlter(\\''+p.id+'\\')">Alter</button>' : '')
         +     '<button class="deny" onclick="decide(\\''+p.id+'\\',\\'deny\\')">Deny</button>'
         +   '</div>'
-        +   '<div class="hint">Alter lets you edit the command before approving.</div>'
+        +   (bash ? '<div class="hint">Alter lets you edit the command before approving.</div>' : '')
         + '</div>';
     }).join("");
   }
